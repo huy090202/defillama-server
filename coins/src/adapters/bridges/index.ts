@@ -27,12 +27,13 @@ import aptos from "./aptosFa";
 import unichan from "./unichain";
 import flow from "./flow";
 import layerzero from "./layerzero";
-import initia from "./initia";
+// import initia from "./initia";
 import zeroDecimalMappings from "./zeroDecimalMappings";
 import anvu from "./anvu";
 import monad from "./monad";
 import megaeth from "./megaeth";
 import pepu from "./pepu";
+import tempo from "./tempo";
 import * as sdk from "@defillama/sdk";
 
 export type Token =
@@ -90,16 +91,17 @@ export const bridges = [
   unichan,
   flow,
   layerzero,
-  initia, 
+  // initia, 
   anvu,
   monad,
   megaeth,
   pepu,
+  tempo,
 ].map(normalizeBridgeResults) as Bridge[];
 
 import { batchGet, batchWrite } from "../../utils/shared/dynamodb";
+import { dualWriteToChRedis } from "../utils/chRedisWrite";
 import { getCurrentUnixTimestamp } from "../../utils/date";
-import produceKafkaTopics from "../../utils/coins3/produce";
 import { chainsThatShouldNotBeLowerCased } from "../../utils/shared/constants";
 import { sendMessage } from "../../../../defi/src/utils/discord";
 
@@ -217,7 +219,9 @@ async function _storeTokensOfBridge(bridge: Bridge, i: number) {
 
   const ddbWriteRes = await batchWrite(writes, true);
   sdk.log(`Wrote ${ddbWriteRes.writeCount} bridge token entries`);
-  await produceKafkaTopics(writes, ["coins-metadata"]);
+  await dualWriteToChRedis(writes).catch(e => {
+    console.error(`[CH/Redis dual-write] bridges non-fatal error: ${(e as Error).message}`);
+  });
   return tokens;
 }
 export async function storeTokens() {

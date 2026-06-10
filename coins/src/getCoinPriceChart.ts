@@ -8,6 +8,7 @@ import {
 import { getBasicCoins } from "./utils/getCoinsUtils";
 import dynamodb from "./utils/shared/dynamodb";
 import { getRecordClosestToTimestamp } from "./utils/shared/getRecordClosestToTimestamp";
+import { isDistressedAssetPK } from "./utils/isDistressed";
 import { getCurrentUnixTimestamp } from "./utils/date";
 import { quantisePeriod, getTimestampsArray } from "./utils/timestampUtils";
 import pLimit from "p-limit";
@@ -145,13 +146,13 @@ function addToResponse(
       response[coinName] = {
         symbol: coin.symbol,
         confidence: coin.confidence,
-        decimals: coin.decimals,
-        prices: [{ timestamp: record.SK, price: record.price }],
+        decimals: coin.decimals == null ? undefined : Number(coin.decimals),
+        prices: [{ timestamp: record.SK, price: Number(record.price) }],
       };
     } else {
       response[coinName].prices.push({
         timestamp: record.SK,
-        price: record.price,
+        price: Number(record.price),
       });
     }
   });
@@ -193,6 +194,14 @@ async function fetchDBData(
   const useRangeQuery = params.period < RANGE_QUERY_MAX_PERIOD;
 
   for (const coin of coins) {
+    // Distressed contracts read $0 across the whole chart — skip both the range
+    // and per-timestamp DynamoDB paths and emit a flat $0 series.
+    if (isDistressedAssetPK(coin.PK)) {
+      timestamps.forEach((timestamp) =>
+        addToResponse(response, coin, { SK: timestamp, price: 0 }, PKTransforms),
+      );
+      continue;
+    }
     const pk = coin.redirect ?? coin.PK;
 
     // Per-timestamp queries: 2 DynamoDB queries each with Limit:1.

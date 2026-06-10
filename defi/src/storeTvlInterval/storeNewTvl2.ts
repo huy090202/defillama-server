@@ -35,6 +35,7 @@ export default async function (
   overwriteExistingData = false,
   extraOptions: any = {},
 ) {
+ 
   const { debugData } = extraOptions
   const hourlyPK = hourlyTvl(protocol.id);
   const currentTvl = calculateTVLWithAllExtraSections(tvl)
@@ -77,16 +78,36 @@ export default async function (
     const lastHourlyTVL = calculateTVLWithAllExtraSections(lastHourlyTVLObject);
     if (currentTvl > 300e9 && excludedTvlId != protocol.id) {
       let errorMessage = `TVL of ${protocol.name} is over 300bn`
+      // debug Clearstar tvl spike
+      if (protocol.id === '6199') {
+        console.log('DEBUG - Clearstar', unixTimestamp, JSON.stringify(usdTokenBalances))
+      }
       Object.values(usdTokenBalances).forEach(tokenBalances => {
         for (const [token, value] of Object.entries(tokenBalances))
           if (value > 1e7) {
             errorMessage += `\n${token} has ${humanizeNumber(value)}`
           }
       })
-      console.log(errorMessage, usdTokenBalances, currentTvl, tvl, debugData)
+      
+      const problemTable: any = {}
+      for (const [token, value] of Object.entries(usdTokenBalances.tvl ?? {})) {
+        if (value > 1e8) {
+          problemTable[token] = {
+            value: humanizeNumber(value),
+            addresses: debugData?.symbolToAddresses?.[token] ?? []
+          }
+        }
+      }
+
+      console.log(errorMessage, problemTable, currentTvl, tvl)
 
 
-      if (currentTvl < 2e12) // less than 2 trillion
+      let tvlToCompareAgainst = await lastWeeklyTVLRecord;
+      let lastWeekTvlValue = 0
+      if (tvlToCompareAgainst.SK !== undefined)
+        lastWeekTvlValue = calculateTVLWithAllExtraSections(tvlToCompareAgainst)
+
+      if (currentTvl < 2e12 || lastWeekTvlValue > 2e7) // less than 2 trillion and last week less than 20 million
         await sendMessage(errorMessage, process.env.TEAM_WEBHOOK!)
       throw new Error(errorMessage)
     }
@@ -128,9 +149,12 @@ export default async function (
           newTokens = newTokens.sort((a, b) => b.value - a.value);
           let details = '';
           if (spikedTokens.length) {
-            details += ' spiked tokens: ' + spikedTokens.slice(0, 15).map(t =>
-              `${t.coin}: ${humanizeNumber(t.prevValue)} → ${humanizeNumber(t.value)} (+${t.pctChange.toFixed(0)}%)`
-            ).join(', ');
+            const displayTable = spikedTokens.slice(0, 5).map(t => ({
+              jump: `${t.pctChange.toFixed(0)}%`,
+              message: ` ${humanizeNumber(t.prevValue)} → ${humanizeNumber(t.value)}`,
+              coin: t.coin,
+            }));
+            details += util.tableToString(displayTable, {title: 'Spiked Tokens', }) + '\n';
           }
           if (newTokens.length) {
             details += ' new tokens: ' + newTokens.slice(0, 10).map(t =>

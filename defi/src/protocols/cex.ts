@@ -320,7 +320,6 @@ export const cexsData: Array<ICex> = [
     slug: "coin8",
     coin: null,
     walletsLink: null,
-    url: "https://www.coin8.co",
   },
   {
     name: "Exmo",
@@ -770,6 +769,13 @@ export const cexsData: Array<ICex> = [
     coin: null,
     walletsLink: null,
     url: "https://bitvavo.com/en",
+  },
+  {
+    name: "SCLiTE",
+    slug: "sclite",
+    coin: null,
+    walletsLink: null,
+    url: "https://sclite.io/",
   },
 ];
 

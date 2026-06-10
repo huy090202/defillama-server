@@ -1,10 +1,16 @@
 import * as HyperExpress from 'hyper-express';
-import { readRouteData, getCacheVersion, readPGCacheForId } from './file-cache';
+import { readRouteData, getCacheVersion, readPGCacheForId, readFlowsForId, PGCacheRecord } from './file-cache';
 import { rwaSlug } from './utils';
+import { trimLeadingZeros } from './cron';
 
 const webserver = new HyperExpress.Server();
 const port = +(process.env.RWA_PORT ?? 5002);
 const RWA_SUBPATH = process.env.RWA_SUBPATH;
+
+// RWA ids hidden from /flows/:id because their flow series is junk from bad
+// upstream mcap (e.g. BRZ#609 — phantom Gnosis/Stellar mcap yields ~1e17 spikes).
+// Serving-layer hide only; remove an id once its upstream mcap is fixed.
+const FLOWS_HIDDEN_IDS = new Set<string>(['609']);
 
 if (!RWA_SUBPATH) {
     throw new Error('Missing required environment variable: RWA_SUBPATH');
@@ -65,6 +71,14 @@ function errorWrapper(routeFn: (req: HyperExpress.Request, res: HyperExpress.Res
             return res.send('Internal Error', true);
         }
     };
+}
+
+function safeDecodeRouteParam(value: string): string {
+    try {
+        return decodeURIComponent(value);
+    } catch {
+        return value;
+    }
 }
 
 function setRoutes(router: HyperExpress.Router): void {
@@ -132,7 +146,8 @@ function setRoutes(router: HyperExpress.Router): void {
                 return errorResponse(res, 'ID map not found', 500);
             }
 
-            const id = idMap[name];
+            const lookupKey = safeDecodeRouteParam(String(name));
+            const id = idMap[lookupKey] ?? idMap[name];
             if (!id) {
                 return errorResponse(res, `RWA "${name}" not found`, 404);
             }
@@ -156,14 +171,14 @@ function setRoutes(router: HyperExpress.Router): void {
 
     // Get historical chart data by chain (accepts label, converts to key)
     router.get(
-        '/chart/chain/:chain/ticker-breakdown',
+        '/chart/chain/:chain/asset-breakdown',
         errorWrapper(async (req, res) => {
             const { chain } = req.params;
             if (!chain) {
                 return errorResponse(res, 'Missing chain parameter', 400);
             }
             const key = rwaSlug(chain);
-            return fileResponse(`charts/chain-ticker-breakdown/${key}.json`, res, 30);
+            return fileResponse(`charts/chain-asset-breakdown/${key}.json`, res, 30);
         })
     );
 
@@ -179,10 +194,24 @@ function setRoutes(router: HyperExpress.Router): void {
             if (!pgCache) {
                 return errorResponse(res, `Asset "${id}" not found`, 404);
             }
-            // Convert pg-cache map to sorted array
-            const data = Object.entries(pgCache)
+            const sorted = Object.entries(pgCache)
                 .map(([timestamp, record]) => ({ timestamp: Number(timestamp), ...record }))
                 .sort((a, b) => a.timestamp - b.timestamp);
+            const data = trimLeadingZeros(sorted) as Array<{
+                timestamp: number;
+                onChainMcap: number | null;
+                activeMcap: number | null;
+                defiActiveTvl: number | null;
+                totalSupply: number | null;
+                chains: PGCacheRecord['chains'];
+            }>;
+            // Null out per-series leading zeros so charts don't render a flat-zero
+            // pre-data line for series that started later than others.
+            for (const key of ['onChainMcap', 'activeMcap', 'defiActiveTvl'] as const) {
+                for (let i = 0; i < data.length && data[i][key] === 0; i++) {
+                    data[i][key] = null;
+                }
+            }
             return successResponse(res, data, 30);
         })
     );
@@ -200,16 +229,16 @@ function setRoutes(router: HyperExpress.Router): void {
         })
     );
 
-    // Get historical chart data by category - breakdown by tickers
+    // Get historical chart data by category - breakdown by asset key
     router.get(
-        '/chart/category/:category/ticker-breakdown',
+        '/chart/category/:category/asset-breakdown',
         errorWrapper(async (req, res) => {
             const { category } = req.params;
             if (!category) {
                 return errorResponse(res, 'Missing category parameter', 400);
             }
             const key = rwaSlug(category);
-            return fileResponse(`charts/category-ticker-breakdown/${key}.json`, res, 30);
+            return fileResponse(`charts/category-asset-breakdown/${key}.json`, res, 30);
         })
     );
 
@@ -226,16 +255,16 @@ function setRoutes(router: HyperExpress.Router): void {
         })
     );
   
-    // Get historical chart data by platform - breakdown by tickers
+    // Get historical chart data by platform - breakdown by asset key
     router.get(
-        '/chart/platform/:platform/ticker-breakdown',
+        '/chart/platform/:platform/asset-breakdown',
         errorWrapper(async (req, res) => {
             const { platform } = req.params;
             if (!platform) {
                 return errorResponse(res, 'Missing platform parameter', 400);
             }
             const key = rwaSlug(platform);
-            return fileResponse(`charts/platform-ticker-breakdown/${key}.json`, res, 30);
+            return fileResponse(`charts/platform-asset-breakdown/${key}.json`, res, 30);
         })
     );
 
@@ -252,16 +281,49 @@ function setRoutes(router: HyperExpress.Router): void {
         })
     );
 
-    // Get historical chart data by assetGroup - breakdown by tickers
+    // Get historical chart data by assetGroup - breakdown by asset key
     router.get(
-        '/chart/assetGroup/:assetGroup/ticker-breakdown',
+        '/chart/assetGroup/:assetGroup/asset-breakdown',
         errorWrapper(async (req, res) => {
             const { assetGroup } = req.params;
             if (!assetGroup) {
                 return errorResponse(res, 'Missing assetGroup parameter', 400);
             }
             const key = rwaSlug(assetGroup);
-            return fileResponse(`charts/assetGroup-ticker-breakdown/${key}.json`, res, 30);
+            return fileResponse(`charts/assetGroup-asset-breakdown/${key}.json`, res, 30);
+        })
+    );
+
+    // Daily net-flow time-series for one RWA over [start, end].
+    // Series is pre-computed in cron (see storeFlowsForIdFromChainRecords) and
+    // served from disk; this route filters by the requested window in-memory.
+    router.get(
+        '/flows/:id',
+        errorWrapper(async (req, res) => {
+            const { id } = req.params;
+            if (!id) return errorResponse(res, 'Missing id parameter', 400);
+            // Hidden ids (bad upstream mcap) have no valid flow series -> 404,
+            // regardless of any stale cached file.
+            if (FLOWS_HIDDEN_IDS.has(String(id))) {
+                return errorResponse(res, `Flows for "${id}" not found`, 404);
+            }
+
+            const now = Math.floor(Date.now() / 1000);
+            const startTs = Number(req.query.start);
+            const endTs = Number(req.query.end) || now;
+            if (!Number.isFinite(startTs) || startTs <= 0) {
+                return errorResponse(res, 'Missing or invalid `start` query param (unix seconds)', 400);
+            }
+            if (!Number.isFinite(endTs) || endTs < startTs) {
+                return errorResponse(res, 'Invalid `end` query param', 400);
+            }
+
+            const series = await readFlowsForId(String(id));
+            if (!series) {
+                return errorResponse(res, `Flows for "${id}" not found`, 404);
+            }
+            const data = series.filter((p: any) => p.timestamp >= startTs && p.timestamp <= endTs);
+            return successResponse(res, { id, start: startTs, end: endTs, data }, 30);
         })
     );
 
@@ -294,13 +356,13 @@ function setRoutes(router: HyperExpress.Router): void {
         })
     );
 
-    // Get specific RWA data by ID from current data
+    // Get specific RWA data by canonical market id from current data
     router.get(
-        '/asset/:ticker',
+        '/asset/:canonicalMarketId',
         errorWrapper(async (req, res) => {
-            const { ticker } = req.params;
-            if (!ticker) {
-                return errorResponse(res, 'Missing ticker parameter', 400);
+            const { canonicalMarketId } = req.params;
+            if (!canonicalMarketId) {
+                return errorResponse(res, 'Missing canonicalMarketId parameter', 400);
             }
 
             const currentData = await readRouteData('current.json');
@@ -308,15 +370,15 @@ function setRoutes(router: HyperExpress.Router): void {
                 return errorResponse(res, 'Data not found', 500);
             }
 
-            const tickerParam = rwaSlug(ticker);
+            const canonicalMarketIdParam = safeDecodeRouteParam(String(canonicalMarketId));
 
             const rwa = currentData.find((item: any) => {
-                const itemTicker = item?.ticker;
-                return typeof itemTicker !== 'undefined' && rwaSlug(itemTicker) === tickerParam;
+                const itemCanonicalMarketId = item?.canonicalMarketId;
+                return typeof itemCanonicalMarketId === 'string' && itemCanonicalMarketId === canonicalMarketIdParam;
             });
 
             if (!rwa) {
-                return errorResponse(res, `Asset "${ticker}" not found`, 404);
+                return errorResponse(res, `Asset "${canonicalMarketId}" not found`, 404);
             }
 
             return successResponse(res, rwa, 20);

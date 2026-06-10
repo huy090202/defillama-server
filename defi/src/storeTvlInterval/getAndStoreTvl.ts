@@ -18,7 +18,7 @@ import { TABLES } from "../api2/db"
 import { getCurrentUnixTimestamp } from "../utils/date";
 import { StaleCoins } from "./staleCoins";
 import { storeAllTokens } from "../../src/utils/shared/bridgedTvlPostgres";
-import { elastic } from '@defillama/sdk';
+import { elastic, humanizeNumber } from '@defillama/sdk';
 import { getBlocksRetry, getCurrentBlock } from "./blocks";
 import { importAdapterDynamic } from "../utils/imports/importAdapter";
 import { deadChainsSet } from "../config/deadChains";
@@ -102,7 +102,14 @@ async function getTvl(
             throw new Error('Cache data missing for ' + storedKey)
           }
         } else {
-          tvlBalances = await tvlFunction(api, ethBlock, chainBlocks, api);
+          if (!options.isTokenRemovalFlow)
+            tvlBalances = await tvlFunction(api, ethBlock, chainBlocks, api);
+          else {
+            tvlBalances = (options.cacheData as any)[storedKey]
+            if (!tvlBalances) {
+              throw new Error(`Cache data missing for token removal flow for ${storedKey}`)
+            }
+          }
           if (tvlBalances === undefined) tvlBalances = api.getBalances()
           chainDashPromise = storeAllTokens(Object.keys(tvlBalances));
         }
@@ -268,6 +275,7 @@ type StoreTvlOptions = {
   symbolToAddresses: { [symbol: string]: string[] },
   tvlErrorsObject?: tvlsObject<Error>,
   skipMissingChains?: boolean,  // sometimes while refilling a protocol with multiple chains, we might be refilling at a point where the protocol was not yet deployed in some of its chains, which would cause the tvlFunction to throw an error for those chains
+  isTokenRemovalFlow: boolean, // if true, it means we are running a token removal flow in the ui tool, instead of re-comuting tvl data from scratch, we use the modified raw token balances from the cache
 }
 
 export type storeTvl2Options = StoreTvlOptions & {
@@ -280,6 +288,7 @@ export type storeTvl2Options = StoreTvlOptions & {
   useCurrentPrices?: boolean,
   breakIfTvlIsZero?: boolean,
   fetchCurrentBlockData?: boolean,
+  isTokenRemovalFlow?: boolean,
   runBeforeStore?: () => Promise<void>,
 }
 
@@ -581,7 +590,9 @@ export async function storeTvl(
       }
     }
 
-    if (!process.env.DRY_RUN) {
+    if (process.env.DRY_RUN) {
+      console.log(`DRY RUN - skipping db update, id: ${protocol.id} | name: ${protocol.name} | current tvl: ${usdTvls.tvl} | hn: ${humanizeNumber(usdTvls.tvl)}`)
+    } else {
       await storeFn()
     }
   } catch (e) {
@@ -679,14 +690,12 @@ function hackForMorphoKatana({ protocol, usdTvls, tokensBalances, usdTokenBalanc
       delete tokensBalances.tvl[token]
     }
   })
-  
 
   Object.keys(tokensBalances.borrowed).forEach((token: string) => {
     if (doublecountedTokenSymbols.has(token.toLowerCase())) {
       delete tokensBalances.borrowed[token]
     }
   })
-  
 
 
   Object.keys(rawTokenBalances.tvl).forEach((token: string) => {

@@ -54,7 +54,8 @@ export function curve(timestamp: number = 0) {
       "0x765Cbd88947fcBc5df1F763d02E384B0a2DD285E",
       "0x2c7A1b4950Fe369e79fB3471284d4a4E66fbEA76",
       "0x46f27BD3eC8f8D602F7ce85D312F4387FBdA7b16",
-      "0x6C5Ff8DCe52BE77b4eCE6B51996018f0C1713bA9"
+      "0x6C5Ff8DCe52BE77b4eCE6B51996018f0C1713bA9",
+      "0xe1b96555bbeca40e583bbb41a11c68ca4706a414",
     ]),
     getGaugePrices("ethereum", timestamp),
   ]);
@@ -176,9 +177,12 @@ export function curve9(timestamp: number = 0) {
 }
 export function curve10(timestamp: number = 0) {
   return Promise.all([
-    getTokenPrices2("bsc", defaultRegistries, timestamp),
+    // getTokenPrices2("bsc", defaultRegistries, timestamp),
     getTokenPrices2("bsc", [], timestamp, "eth-custom", [
       "0xa5e0e46462970c9ee8c2ecadcde254c483748ec4",
+      "0xB84637aB9Be835580821A67823f414FFd0bbf625",
+      "0xE6e2905F54BAF7625F4943B74c50338362741Cd4",
+      "0xed55ff3fcb43249838a04a9707ff2c4b825507ff",
     ]),
   ]);
 }

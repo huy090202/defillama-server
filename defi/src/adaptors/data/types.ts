@@ -11,6 +11,7 @@ export type ChartBreakdownOptions = 'daily' | 'weekly' | 'monthly'
 
 export type ProtocolDimensionsExtraConfig = {
     defaultChartView?: ChartBreakdownOptions;
+    disableFromResponse?: boolean;  // sometimes we want to run an adapter and store the data, but hide it from the api while we investiage if it is legit
     adapter: string;
     genuineSpikes?: [string, string][]  // list of [yyyy-mm-dd date, reason] with valid spikes
 }
@@ -311,6 +312,7 @@ export type ProtocolSummary = RecordSummary & {
     change_7dover7d?: number
     average1y?: number
     monthlyAverage1y?: number
+    annualized1y?: number | null
     totalAllTime?: number
     breakdown24h?: any
     breakdown30d?: any
