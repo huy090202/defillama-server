@@ -17,6 +17,7 @@ const chain = "hyperliquid";
 const HZUSD = "0x6E2ade6FFc94d24A81406285c179227dfBFc97CE";
 const BULLHYPE = "0x12cF926C3884dda144e18E11e2659c0675cF20eA";
 const STAKED_HZUSD = "0xce01a9B9bc08f0847fb745044330Eff1181360Cd";
+const WHYPE = "0x5555555555555555555555555555555555555555";
 
 // HypeZionExchangeInformation proxy (Hyperliquid Mainnet)
 const EXCHANGE_INFO = "0x9286ABAC7c29e8A183155E961a4E4BBA2E162c7A";
@@ -24,8 +25,6 @@ const EXCHANGE_INFO = "0x9286ABAC7c29e8A183155E961a4E4BBA2E162c7A";
 const abis = {
   getProtocolNavInUSD:
     "function getProtocolNavInUSD() view returns (uint256 zusdNav, uint256 zhypeNav, uint256 szusdNav, uint256 hypePrice)",
-  totalAssets: "uint256:totalAssets",
-  totalSupply: "uint256:totalSupply",
 };
 
 export default async function getTokenPrices(timestamp: number = 0) {
@@ -41,6 +40,7 @@ export default async function getTokenPrices(timestamp: number = 0) {
   const zusdNav = Number(navData.zusdNav) / 1e18; // hzUSD NAV in USD (~$1)
   const zhypeNav = Number(navData.zhypeNav) / 1e18; // BullHYPE NAV in USD
   const szusdNav = Number(navData.szusdNav) / 1e18; // shzUSD NAV in USD (share price)
+  const hypePrice = Number(navData.hypePrice) / 1e18; // protocol's HYPE oracle price in USD
 
   // hzUSD — stablecoin pegged to $1
   if (zusdNav > 0) {
@@ -48,13 +48,19 @@ export default async function getTokenPrices(timestamp: number = 0) {
   }
 
   // BullHYPE — leverage token
-  if (zhypeNav > 0) {
-    pricesObject[BULLHYPE] = { price: zhypeNav };
+  if (zhypeNav > 0 && hypePrice > 0) {
+    pricesObject[BULLHYPE] = {
+      underlying: WHYPE,
+      price: zhypeNav / hypePrice,
+    };
   }
 
   // shzUSD — staked hzUSD vault share price
-  if (szusdNav > 0) {
-    pricesObject[STAKED_HZUSD] = { price: szusdNav };
+  if (szusdNav > 0 && zusdNav > 0) {
+    pricesObject[STAKED_HZUSD] = {
+      underlying: HZUSD,
+      price: szusdNav / zusdNav,
+    };
   }
 
   return getWrites({
@@ -62,5 +68,6 @@ export default async function getTokenPrices(timestamp: number = 0) {
     timestamp,
     pricesObject,
     projectName: "hypezion-finance",
+    confidence: 0.9,
   });
 }
